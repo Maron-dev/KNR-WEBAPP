@@ -172,6 +172,7 @@
                     <tr><th>GPS RELATIVE</th>    <td id="gps_relative">0.0,0.0</td></tr>
                     <tr><th>Mission time</th>    <td id="mission_time">00:00:00</td></tr>
                     <tr><th>Flight mode</th>     <td id="flight_mode">INIT</td></tr>
+                    <tr><th>Water temperature</th> <td id="water_temp">--</td></tr>
                     <tr><th>Last update</th>     <td id="last_update">-</td></tr>
                 </table>
             </section>
@@ -219,5 +220,38 @@
     <div id="error-display" class="error-display hidden"></div>
 
     <script src="client.js"></script>
+    <script>
+    // Aktualizacja wszystkich parametrów z random_status.py
+    const paramMap = {
+        altitude: 'altitude',
+        speed: 'speed',
+        battery_percent: 'battery_percent',
+        battery_voltage: 'battery_voltage',
+        gps_global: 'gps_global',
+        gps_relative: 'gps_relative',
+        mission_time: 'mission_time',
+        flight_mode: 'flight_mode',
+        water_temp: 'water_temp',
+        last_update: 'last_update',
+    };
+
+    async function fetchAndUpdateStatus() {
+        try {
+            const resp = await fetch('/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            for (const key in paramMap) {
+                const el = document.getElementById(paramMap[key]);
+                if (el && data[key] !== undefined) {
+                    el.textContent = data[key];
+                }
+            }
+        } catch (e) {
+            // Możesz dodać obsługę błędów
+        }
+    }
+    setInterval(fetchAndUpdateStatus, 2000);
+    fetchAndUpdateStatus();
+    </script>
 </body>
 </html>

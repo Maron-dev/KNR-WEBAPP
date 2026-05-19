@@ -1,3 +1,83 @@
+import threading
+import time
+# ROS2 imports
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float32, String, Int32
+
+# Słownik na dane telemetryczne
+status_data = {
+    "altitude": 0.0,
+    "speed": 0.0,
+    "battery_percent": "100%",
+    "battery_voltage": "0V",
+    "gps_global": "0.0,0.0",
+    "gps_relative": "0.0,0.0",
+    "mission_time": "00:00:00",
+    "flight_mode": "INIT",
+    "water_temp": "--",
+    "last_update": "-",
+}
+
+# ROS2 node do subskrypcji topiców
+class StatusNode(Node):
+    def __init__(self):
+        super().__init__('status_node')
+        self.create_subscription(Float32, 'altitude', self.altitude_callback, 10)
+        self.create_subscription(Float32, 'speed', self.speed_callback, 10)
+        self.create_subscription(Int32, 'battery_percent', self.battery_percent_callback, 10)
+        self.create_subscription(Float32, 'battery_voltage', self.battery_voltage_callback, 10)
+        self.create_subscription(String, 'gps_global', self.gps_global_callback, 10)
+        self.create_subscription(String, 'gps_relative', self.gps_relative_callback, 10)
+        self.create_subscription(String, 'mission_time', self.mission_time_callback, 10)
+        self.create_subscription(String, 'flight_mode', self.flight_mode_callback, 10)
+        self.create_subscription(Float32, 'water_temp', self.water_temp_callback, 10)
+
+    def altitude_callback(self, msg):
+        print("ALTITUDE:", msg.data)
+        status_data["altitude"] = round(msg.data, 1)
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def speed_callback(self, msg):
+        status_data["speed"] = round(msg.data, 1)
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def battery_percent_callback(self, msg):
+        status_data["battery_percent"] = f"{msg.data}%"
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def battery_voltage_callback(self, msg):
+        status_data["battery_voltage"] = f"{msg.data:.2f}V"
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def gps_global_callback(self, msg):
+        status_data["gps_global"] = msg.data
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def gps_relative_callback(self, msg):
+        status_data["gps_relative"] = msg.data
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def mission_time_callback(self, msg):
+        status_data["mission_time"] = msg.data
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def flight_mode_callback(self, msg):
+        status_data["flight_mode"] = msg.data
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def water_temp_callback(self, msg):
+        status_data["water_temp"] = f"{msg.data:.1f} °C"
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+def ros_spin():
+    rclpy.init()
+    node = StatusNode()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 import argparse
 import asyncio
 import json
@@ -71,6 +151,11 @@ async def index(request: web.Request) -> web.Response:
 async def javascript(request: web.Request) -> web.Response:
     content = open(os.path.join(ROOT, "client.js"), "r").read()
     return web.Response(content_type="application/javascript", text=content)
+
+
+# Endpoint /status zwracający dane telemetryczne
+async def status(request):
+    return web.json_response(status_data)
 
 
 async def offer(request: web.Request) -> web.Response:
@@ -170,9 +255,14 @@ if __name__ == "__main__":
     else:
         ssl_context = None
 
+    # Uruchom node ROS2 w osobnym wątku
+    t = threading.Thread(target=ros_spin, daemon=True)
+    t.start()
+
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
     app.router.add_get("/", index)
     app.router.add_get("/client.js", javascript)
     app.router.add_post("/offer", offer)
+    app.router.add_get("/status", status)
     web.run_app(app, host="0.0.0.0", port=8080)
