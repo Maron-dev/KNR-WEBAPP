@@ -252,6 +252,21 @@
     }
     setInterval(fetchAndUpdateStatus, 2000);
     fetchAndUpdateStatus();
+    // Pobieranie najnowszego obrazu z serwera i wstawianie do img#drone-image
+    async function updateLatestImage() {
+        try {
+            const resp = await fetch('/latest_image');
+            if (resp.ok) {
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                document.getElementById('drone-image').src = url;
+            }
+        } catch (e) {
+            // Obsługa błędów
+        }
+    }
+    setInterval(updateLatestImage, 2000);
+    updateLatestImage();
     </script>
 </body>
 </html>

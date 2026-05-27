@@ -1,3 +1,6 @@
+from sensor_msgs.msg import CompressedImage
+
+latest_image_bytes = None
 import threading
 import time
 # ROS2 imports
@@ -32,6 +35,11 @@ class StatusNode(Node):
         self.create_subscription(String, 'mission_time', self.mission_time_callback, 10)
         self.create_subscription(String, 'flight_mode', self.flight_mode_callback, 10)
         self.create_subscription(Float32, 'water_temp', self.water_temp_callback, 10)
+        self.create_subscription(CompressedImage, 'drone_image', self.image_callback, 10)
+
+    def image_callback(self, msg):
+        global latest_image_bytes
+        latest_image_bytes = msg.data
 
     def altitude_callback(self, msg):
         print("ALTITUDE:", msg.data)
@@ -153,6 +161,15 @@ async def javascript(request: web.Request) -> web.Response:
     return web.Response(content_type="application/javascript", text=content)
 
 
+# Endpoint /latest_image zwracający najnowszy obraz JPEG
+async def latest_image(request):
+    from aiohttp import web
+    if latest_image_bytes is not None:
+        return web.Response(body=latest_image_bytes, content_type='image/jpeg')
+    else:
+        return web.Response(status=404)
+
+
 # Endpoint /status zwracający dane telemetryczne
 async def status(request):
     return web.json_response(status_data)
@@ -265,4 +282,5 @@ if __name__ == "__main__":
     app.router.add_get("/client.js", javascript)
     app.router.add_post("/offer", offer)
     app.router.add_get("/status", status)
+    app.router.add_get("/latest_image", latest_image)
     web.run_app(app, host="0.0.0.0", port=8080)
