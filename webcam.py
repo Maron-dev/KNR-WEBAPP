@@ -3,12 +3,14 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 from av import VideoFrame
+import fractions
 
 latest_image_bytes = None
 import threading
 import time
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float32, String, Int32
 
 # Słownik na dane telemetryczne
@@ -36,6 +38,13 @@ class StatusNode(Node):
         super().__init__('status_node')
         self.bridge = CvBridge()
 
+        # QoS dla kamery OAK (BEST_EFFORT, tylko ostatnia klatka)
+        oak_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
         self.create_subscription(Float32, 'altitude', self.altitude_callback, 10)
         self.create_subscription(Float32, 'speed', self.speed_callback, 10)
         self.create_subscription(Int32, 'battery_percent', self.battery_percent_callback, 10)
@@ -49,8 +58,8 @@ class StatusNode(Node):
         self.create_subscription(Float32, 'water_cond', self.water_cond_callback, 10)
         self.create_subscription(CompressedImage, 'drone_image', self.image_callback, 10)
 
-        # Subskrypcja kamery OAK
-        self.create_subscription(Image, '/oak/rgb/image_raw', self.oak_image_callback, 10)
+        # Subskrypcja kamery OAK z QoS
+        self.create_subscription(Image, '/oak/rgb/image_raw', self.oak_image_callback, oak_qos)
 
     def oak_image_callback(self, msg):
         global latest_oak_frame, latest_image_bytes
@@ -135,7 +144,6 @@ import json
 import logging
 import os
 import ssl
-from typing import Optional
 
 from aiohttp import web
 from aiortc import (
@@ -157,24 +165,20 @@ class OakVideoTrack(MediaStreamTrack):
 
     def __init__(self):
         super().__init__()
-        self._timestamp = 0
         # Czarna klatka zastępcza gdy brak obrazu z OAK
         self._blank = np.zeros((480, 640, 3), dtype=np.uint8)
 
     async def recv(self):
-        # Taktowanie – 30 fps
-        self._timestamp += 1
-        wait = 1.0 / 30.0
-        await asyncio.sleep(wait)
+        # next_timestamp() pilnuje rytmu 30fps i zwraca poprawne pts
+        pts, time_base = await self.next_timestamp()
 
         with oak_frame_lock:
             frame_bgr = latest_oak_frame.copy() if latest_oak_frame is not None else self._blank.copy()
 
-        # OpenCV BGR -> VideoFrame (yuv420p wymagane przez WebRTC)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
-        video_frame.pts = self._timestamp
-        video_frame.time_base = __import__('fractions').Fraction(1, 30)
+        video_frame.pts = pts
+        video_frame.time_base = time_base
         return video_frame
 
 
