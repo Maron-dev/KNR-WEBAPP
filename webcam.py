@@ -1,9 +1,12 @@
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+from av import VideoFrame
 
 latest_image_bytes = None
 import threading
 import time
-# ROS2 imports
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, String, Int32
@@ -22,10 +25,17 @@ status_data = {
     "last_update": "-",
 }
 
+# Globalny bufor na ostatnią klatkę z kamery OAK
+latest_oak_frame = None
+oak_frame_lock = threading.Lock()
+
+
 # ROS2 node do subskrypcji topiców
 class StatusNode(Node):
     def __init__(self):
         super().__init__('status_node')
+        self.bridge = CvBridge()
+
         self.create_subscription(Float32, 'altitude', self.altitude_callback, 10)
         self.create_subscription(Float32, 'speed', self.speed_callback, 10)
         self.create_subscription(Int32, 'battery_percent', self.battery_percent_callback, 10)
@@ -35,7 +45,29 @@ class StatusNode(Node):
         self.create_subscription(String, 'mission_time', self.mission_time_callback, 10)
         self.create_subscription(String, 'flight_mode', self.flight_mode_callback, 10)
         self.create_subscription(Float32, 'water_temp', self.water_temp_callback, 10)
+        self.create_subscription(Float32, 'water_ph', self.water_ph_callback, 10)
+        self.create_subscription(Float32, 'water_cond', self.water_cond_callback, 10)
         self.create_subscription(CompressedImage, 'drone_image', self.image_callback, 10)
+
+        # Subskrypcja kamery OAK
+        self.create_subscription(Image, '/oak/rgb/image_raw', self.oak_image_callback, 10)
+
+    def oak_image_callback(self, msg):
+        global latest_oak_frame, latest_image_bytes
+        try:
+            # Konwersja ROS Image -> OpenCV BGR
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+            # Aktualizuj bufor dla WebRTC
+            with oak_frame_lock:
+                latest_oak_frame = cv_image.copy()
+
+            # Aktualizuj też /latest_image (JPEG)
+            _, jpeg = cv2.imencode('.jpg', cv_image)
+            latest_image_bytes = jpeg.tobytes()
+
+        except Exception as e:
+            print(f"[OAK] Błąd konwersji obrazu: {e}")
 
     def image_callback(self, msg):
         global latest_image_bytes
@@ -78,6 +110,15 @@ class StatusNode(Node):
         status_data["water_temp"] = f"{msg.data:.1f} °C"
         status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
+    def water_ph_callback(self, msg):
+        status_data["water_ph"] = f"{msg.data:.2f}"
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def water_cond_callback(self, msg):
+        status_data["water_cond"] = f"{msg.data:.1f} μS/cm"
+        status_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def ros_spin():
     rclpy.init()
     node = StatusNode()
@@ -86,12 +127,13 @@ def ros_spin():
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
 import argparse
 import asyncio
 import json
 import logging
 import os
-import platform
 import ssl
 from typing import Optional
 
@@ -102,46 +144,43 @@ from aiortc import (
     RTCRtpSender,
     RTCSessionDescription,
 )
-from aiortc.contrib.media import MediaPlayer, MediaRelay
 
 ROOT = os.path.dirname(__file__)
-
 pcs = set()
-relay = None
-webcam = None
 
 
-def create_local_tracks(
-    play_from: str, decode: bool
-) -> tuple[Optional[MediaStreamTrack], Optional[MediaStreamTrack]]:
-    global relay, webcam
+# -------------------------------------------------------
+# Własny VideoTrack pobierający klatki z bufora OAK
+# -------------------------------------------------------
+class OakVideoTrack(MediaStreamTrack):
+    kind = "video"
 
-    if play_from:
-        # If a file name was given, play from that file.
-        player = MediaPlayer(play_from, decode=decode)
-        return player.audio, player.video
-    else:
-        # Otherwise, play from the system's default webcam.
-        #
-        # In order to serve the same webcam to multiple users we make use of
-        # a `MediaRelay`. The webcam will stay open, so it is our responsability
-        # to stop the webcam when the application shuts down in `on_shutdown`.
-        options = {"framerate": "30", "video_size": "640x480"}
-        if relay is None:
-            if platform.system() == "Darwin":
-                webcam = MediaPlayer(
-                    "default:none", format="avfoundation", options=options
-                )
-            elif platform.system() == "Windows":
-                webcam = MediaPlayer(
-                    "video=Integrated Camera", format="dshow", options=options
-                )
-            else:
-                webcam = MediaPlayer("/dev/video0", format="v4l2", options=options)
-            relay = MediaRelay()
-        return None, relay.subscribe(webcam.video)
+    def __init__(self):
+        super().__init__()
+        self._timestamp = 0
+        # Czarna klatka zastępcza gdy brak obrazu z OAK
+        self._blank = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    async def recv(self):
+        # Taktowanie – 30 fps
+        self._timestamp += 1
+        wait = 1.0 / 30.0
+        await asyncio.sleep(wait)
+
+        with oak_frame_lock:
+            frame_bgr = latest_oak_frame.copy() if latest_oak_frame is not None else self._blank.copy()
+
+        # OpenCV BGR -> VideoFrame (yuv420p wymagane przez WebRTC)
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
+        video_frame.pts = self._timestamp
+        video_frame.time_base = __import__('fractions').Fraction(1, 30)
+        return video_frame
 
 
+# -------------------------------------------------------
+# Pomocnicze funkcje
+# -------------------------------------------------------
 def force_codec(pc: RTCPeerConnection, sender: RTCRtpSender, forced_codec: str) -> None:
     kind = forced_codec.split("/")[0]
     codecs = RTCRtpSender.getCapabilities(kind).codecs
@@ -161,16 +200,13 @@ async def javascript(request: web.Request) -> web.Response:
     return web.Response(content_type="application/javascript", text=content)
 
 
-# Endpoint /latest_image zwracający najnowszy obraz JPEG
 async def latest_image(request):
-    from aiohttp import web
     if latest_image_bytes is not None:
         return web.Response(body=latest_image_bytes, content_type='image/jpeg')
     else:
         return web.Response(status=404)
 
 
-# Endpoint /status zwracający dane telemetryczne
 async def status(request):
     return web.json_response(status_data)
 
@@ -189,27 +225,12 @@ async def offer(request: web.Request) -> web.Response:
             await pc.close()
             pcs.discard(pc)
 
-    # open media source
-    audio, video = create_local_tracks(
-        args.play_from, decode=not args.play_without_decoding
-    )
-
-    if audio:
-        audio_sender = pc.addTrack(audio)
-        if args.audio_codec:
-            force_codec(pc, audio_sender, args.audio_codec)
-        elif args.play_without_decoding:
-            raise Exception("You must specify the audio codec using --audio-codec")
-
-    if video:
-        video_sender = pc.addTrack(video)
-        if args.video_codec:
-            force_codec(pc, video_sender, args.video_codec)
-        elif args.play_without_decoding:
-            raise Exception("You must specify the video codec using --video-codec")
+    # Dodaj track z kamery OAK
+    video_sender = pc.addTrack(OakVideoTrack())
+    if args.video_codec:
+        force_codec(pc, video_sender, args.video_codec)
 
     await pc.setRemoteDescription(offer)
-
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
@@ -222,42 +243,19 @@ async def offer(request: web.Request) -> web.Response:
 
 
 async def on_shutdown(app: web.Application) -> None:
-    # Close peer connections.
     coros = [pc.close() for pc in pcs]
     await asyncio.gather(*coros)
     pcs.clear()
 
-    # If a shared webcam was opened, stop it.
-    if webcam is not None:
-        webcam.video.stop()
-
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="WebRTC webcam demo")
+    parser = argparse.ArgumentParser(description="WebRTC OAK camera demo")
     parser.add_argument("--cert-file", help="SSL certificate file (for HTTPS)")
     parser.add_argument("--key-file", help="SSL key file (for HTTPS)")
-    parser.add_argument("--play-from", help="Read the media from a file and sent it.")
-    parser.add_argument(
-        "--play-without-decoding",
-        help=(
-            "Read the media without decoding it (experimental). "
-            "For now it only works with an MPEGTS container with only H.264 video."
-        ),
-        action="store_true",
-    )
-    parser.add_argument(
-        "--host", default="0.0.0.0", help="Host for HTTP server (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8080, help="Port for HTTP server (default: 8080)"
-    )
+    parser.add_argument("--host", default="0.0.0.0", help="Host for HTTP server (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8080, help="Port for HTTP server (default: 8080)")
     parser.add_argument("--verbose", "-v", action="count")
-    parser.add_argument(
-        "--audio-codec", help="Force a specific audio codec (e.g. audio/opus)"
-    )
-    parser.add_argument(
-        "--video-codec", help="Force a specific video codec (e.g. video/H264)"
-    )
+    parser.add_argument("--video-codec", help="Force a specific video codec (e.g. video/H264)")
 
     args = parser.parse_args()
 
@@ -283,4 +281,4 @@ if __name__ == "__main__":
     app.router.add_post("/offer", offer)
     app.router.add_get("/status", status)
     app.router.add_get("/latest_image", latest_image)
-    web.run_app(app, host="0.0.0.0", port=8080)
+    web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)
