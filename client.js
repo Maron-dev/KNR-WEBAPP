@@ -2,11 +2,11 @@ var pc = null;
 
 function negotiate() {
     pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
+    // Usunięto audio - kamera OAK nie wysyła dźwięku
+
     return pc.createOffer().then((offer) => {
         return pc.setLocalDescription(offer);
     }).then(() => {
-        // wait for ICE gathering to complete
         return new Promise((resolve) => {
             if (pc.iceGatheringState === 'complete') {
                 resolve();
@@ -27,9 +27,7 @@ function negotiate() {
                 sdp: offer.sdp,
                 type: offer.type,
             }),
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             method: 'POST'
         });
     }).then((response) => {
@@ -52,24 +50,29 @@ function start() {
 
     pc = new RTCPeerConnection(config);
 
-    // connect audio / video
     pc.addEventListener('track', (evt) => {
         if (evt.track.kind == 'video') {
             document.getElementById('video').srcObject = evt.streams[0];
-        } else {
-            document.getElementById('audio').srcObject = evt.streams[0];
         }
     });
 
+    // Logowanie stanu połączenia do konsoli - pomocne przy debugowaniu
+    pc.addEventListener('connectionstatechange', () => {
+        console.log('WebRTC state:', pc.connectionState);
+    });
+
+    pc.addEventListener('iceconnectionstatechange', () => {
+        console.log('ICE state:', pc.iceConnectionState);
+    });
+
     document.getElementById('start').style.display = 'none';
-    negotiate();
     document.getElementById('stop').style.display = 'inline-block';
+    negotiate();
 }
 
 function stop() {
     document.getElementById('stop').style.display = 'none';
-
-    // close peer connection
+    document.getElementById('start').style.display = 'inline-block';
     setTimeout(() => {
         pc.close();
     }, 500);

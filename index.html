@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -172,7 +171,9 @@
                     <tr><th>GPS RELATIVE</th>    <td id="gps_relative">0.0,0.0</td></tr>
                     <tr><th>Mission time</th>    <td id="mission_time">00:00:00</td></tr>
                     <tr><th>Flight mode</th>     <td id="flight_mode">INIT</td></tr>
-                    <tr><th>Water temperature</th> <td id="water_temp">--</td></tr>
+                    <tr><th>Water temperature</th> <td id="water_temp">-- °C</td></tr>
+                    <tr><th>Water pH</th>          <td id="water_ph">--</td></tr>
+                    <tr><th>Water conductivity</th> <td id="water_cond">-- μS/cm</td></tr>
                     <tr><th>Last update</th>     <td id="last_update">-</td></tr>
                 </table>
             </section>
@@ -200,8 +201,9 @@
                         <button id="start" onclick="start()" style="margin-left: 10px;">Start</button>
                         <button id="stop" style="display: none; margin-left: 10px;" onclick="stop()">Stop</button>
                     </div>
-                    <audio id="audio" autoplay="true" style="display:none;"></audio>
-                    <video id="video" autoplay="true" playsinline="true"></video>
+                    <!-- Usunięto <audio> - kamera OAK nie ma mikrofonu -->
+                    <!-- muted wymagane przez przeglądarki do autoplay -->
+                    <video id="video" autoplay="true" playsinline="true" muted></video>
                 </div>
             </div>
         </div> <!-- /dashboard -->
@@ -221,7 +223,6 @@
 
     <script src="client.js"></script>
     <script>
-    // Aktualizacja wszystkich parametrów z random_status.py
     const paramMap = {
         altitude: 'altitude',
         speed: 'speed',
@@ -232,6 +233,8 @@
         mission_time: 'mission_time',
         flight_mode: 'flight_mode',
         water_temp: 'water_temp',
+        water_ph: 'water_ph',
+        water_cond: 'water_cond',
         last_update: 'last_update',
     };
 
@@ -246,13 +249,11 @@
                     el.textContent = data[key];
                 }
             }
-        } catch (e) {
-            // Możesz dodać obsługę błędów
-        }
+        } catch (e) {}
     }
     setInterval(fetchAndUpdateStatus, 2000);
     fetchAndUpdateStatus();
-    // Pobieranie najnowszego obrazu z serwera i wstawianie do img#drone-image
+
     async function updateLatestImage() {
         try {
             const resp = await fetch('/latest_image');
@@ -261,9 +262,7 @@
                 const url = URL.createObjectURL(blob);
                 document.getElementById('drone-image').src = url;
             }
-        } catch (e) {
-            // Obsługa błędów
-        }
+        } catch (e) {}
     }
     setInterval(updateLatestImage, 2000);
     updateLatestImage();
